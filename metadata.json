@@ -1,0 +1,5 @@
+{
+  "name": "Naver Business Crawler",
+  "description": "Crawl business information using Naver Search API based on keywords.",
+  "requestFramePermissions": []
+}
