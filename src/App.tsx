@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, AlertCircle, Download, Building2, MapPin } from 'lucide-react';
+import { Search, AlertCircle, Download, Building2, MapPin, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface KakaoLocalItem {
   id: string;
@@ -16,9 +16,13 @@ interface KakaoLocalItem {
 export default function App() {
   const [region, setRegion] = useState('');
   const [keyword, setKeyword] = useState('');
-  const [results, setResults] = useState<KakaoLocalItem[]>([]);
+  const [allResults, setAllResults] = useState<KakaoLocalItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(15);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,6 +30,8 @@ export default function App() {
 
     setLoading(true);
     setError(null);
+    setAllResults([]);
+    setCurrentPage(1);
 
     // Combine region and keyword for better Kakao Local Search results
     const searchQuery = `${region} ${keyword}`.trim();
@@ -36,19 +42,43 @@ export default function App() {
         throw new Error('카카오 API 키가 설정되지 않았습니다. (VITE_KAKAO_REST_API_KEY 환경변수 필요)');
       }
 
-      const response = await fetch(`https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(searchQuery)}&size=15`, {
-        headers: {
-          "Authorization": `KakaoAK ${kakaoKey}`,
-        },
-      });
-      
-      const data = await response.json();
+      const fetchPage = async (page: number) => {
+        const response = await fetch(`https://dapi.kakao.com/v2/local/search/keyword.json?query=${encodeURIComponent(searchQuery)}&size=15&page=${page}`, {
+          headers: {
+            "Authorization": `KakaoAK ${kakaoKey}`,
+          },
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.message || 'Failed to fetch data from Kakao API');
+        }
+        return data;
+      };
 
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to fetch data from Kakao API');
+      // Fetch first page to get total count
+      const firstPageData = await fetchPage(1);
+      let combinedResults = [...firstPageData.documents];
+
+      // Kakao API limits pageable_count to max 45 items total (3 pages of 15) for keyword search.
+      // We calculate how many pages we need to fetch to get all available results.
+      const pageableCount = firstPageData.meta.pageable_count;
+      const maxPage = Math.min(Math.ceil(pageableCount / 15), 45);
+
+      if (maxPage > 1) {
+        const promises = [];
+        for (let p = 2; p <= maxPage; p++) {
+          promises.push(fetchPage(p));
+        }
+        const restPages = await Promise.all(promises);
+        restPages.forEach(data => {
+          combinedResults.push(...data.documents);
+        });
       }
 
-      setResults(data.documents || []);
+      // Remove duplicates just in case
+      const uniqueResults = Array.from(new Map(combinedResults.map(item => [item.id, item])).values());
+
+      setAllResults(uniqueResults);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -57,12 +87,12 @@ export default function App() {
   };
 
   const exportToCSV = () => {
-    if (results.length === 0) return;
+    if (allResults.length === 0) return;
 
     const headers = ['업체명', '주소', '연락처'];
     const csvContent = [
       headers.join(','),
-      ...results.map(item => {
+      ...allResults.map(item => {
         const name = `"${item.place_name.replace(/"/g, '""')}"`;
         const address = `"${(item.road_address_name || item.address_name).replace(/"/g, '""')}"`;
         const phone = `"${item.phone || 'N/A'}"`;
@@ -80,6 +110,11 @@ export default function App() {
     link.click();
     document.body.removeChild(link);
   };
+
+  // Pagination logic
+  const totalPages = Math.ceil(allResults.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const paginatedResults = allResults.slice(startIndex, startIndex + itemsPerPage);
 
   return (
     <div className="min-h-screen p-8 max-w-[1200px] mx-auto">
@@ -133,6 +168,35 @@ export default function App() {
         </div>
       )}
 
+      {allResults.length > 0 && !loading && !error && (
+        <div className="mb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="font-mono text-sm">
+            총 <span className="font-bold text-lg">{allResults.length}</span>건 검색됨
+            {allResults.length === 45 && (
+              <span className="text-xs text-red-600 ml-2 font-sans">
+                * 카카오 API 정책상 최대 45개까지만 제공됩니다.
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 font-mono text-sm">
+            <label>보기 방식:</label>
+            <select
+              value={itemsPerPage}
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="border border-black/20 bg-white px-3 py-1.5 focus:outline-none focus:border-black cursor-pointer"
+            >
+              <option value={15}>15개씩</option>
+              <option value={30}>30개씩</option>
+              <option value={50}>50개씩</option>
+              <option value={100}>100개씩</option>
+            </select>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white border border-black/20 overflow-x-auto">
         <div className="min-w-[800px]">
           <div className="col-header">
@@ -141,7 +205,7 @@ export default function App() {
             <div>연락처 (Contact)</div>
           </div>
 
-          {results.length === 0 && !loading && !error && (
+          {allResults.length === 0 && !loading && !error && (
             <div className="p-12 text-center font-mono text-sm opacity-50">
               지역과 키워드를 입력하고 검색해주세요.
             </div>
@@ -149,11 +213,11 @@ export default function App() {
 
           {loading && (
             <div className="p-12 text-center font-mono text-sm opacity-50 animate-pulse">
-              데이터를 수집하고 있습니다...
+              데이터를 수집하고 있습니다... (최대 45개)
             </div>
           )}
 
-          {!loading && results.map((item) => (
+          {!loading && paginatedResults.map((item) => (
             <div key={item.id} className="data-row group">
               <div className="data-value font-bold font-sans">
                 <a href={item.place_url} target="_blank" rel="noreferrer" className="hover:underline">
@@ -167,14 +231,48 @@ export default function App() {
         </div>
       </div>
 
-      {results.length > 0 && (
+      {!loading && totalPages > 1 && (
+        <div className="mt-6 flex justify-center items-center gap-2 font-mono text-sm">
+          <button
+            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            disabled={currentPage === 1}
+            className="p-2 border border-black/20 disabled:opacity-30 hover:bg-black/5 transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+            <button
+              key={page}
+              onClick={() => setCurrentPage(page)}
+              className={`w-8 h-8 flex items-center justify-center border transition-colors ${
+                currentPage === page 
+                  ? 'border-black bg-black text-white' 
+                  : 'border-black/20 hover:bg-black/5'
+              }`}
+            >
+              {page}
+            </button>
+          ))}
+
+          <button
+            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+            disabled={currentPage === totalPages}
+            className="p-2 border border-black/20 disabled:opacity-30 hover:bg-black/5 transition-colors"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {allResults.length > 0 && (
         <div className="mt-6 flex justify-end">
           <button
             onClick={exportToCSV}
             className="flex items-center gap-2 px-4 py-2 border border-black font-mono text-sm hover:bg-black hover:text-white transition-colors"
           >
             <Download className="w-4 h-4" />
-            CSV 다운로드
+            전체 결과 CSV 다운로드
           </button>
         </div>
       )}
